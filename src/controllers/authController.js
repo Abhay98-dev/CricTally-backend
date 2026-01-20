@@ -98,6 +98,7 @@ const loginUser = async (req, res) => {
     );
 
     // 5) Return response (don't send password hash)
+    console.log("User logged in:", user.email);
     return res.status(200).json({
       ok: true,
       message: "Login successful",
