@@ -39,6 +39,7 @@ const registerUser = async (req, res) => {
       [name, email, passwordHash]
     );
 
+    console.log("New user registered:", email);
     return res.status(201).json({
       ok: true,
       message: "User registered successfully",
