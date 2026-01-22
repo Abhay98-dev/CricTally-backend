@@ -4,7 +4,7 @@ const redis = require("../config/redis");
 
 const createMatch = async (req, res) => {
   try {
-    const { teamAName, teamBName, overs } = req.body;
+    const { teamAName, teamBName, overs, teamAPlayers, teamBPlayers } = req.body;
     const userId = req.user.id;
 
     // Validation
@@ -12,6 +12,21 @@ const createMatch = async (req, res) => {
       return res.status(400).json({
         ok: false,
         message: "teamAName, teamBName and overs are required",
+      });
+    }
+
+    // ✅ Validate players on create
+    if (!Array.isArray(teamAPlayers) || !Array.isArray(teamBPlayers)) {
+      return res.status(400).json({
+        ok: false,
+        message: "teamAPlayers and teamBPlayers must be arrays",
+      });
+    }
+
+    if (teamAPlayers.length < 2 || teamBPlayers.length < 2) {
+      return res.status(400).json({
+        ok: false,
+        message: "Each team must have at least 2 players",
       });
     }
 
@@ -30,10 +45,29 @@ const createMatch = async (req, res) => {
       [userId, teamAName, teamBName, overs]
     );
 
+    const match = result.rows[0];
+
+    // ✅ Store squads in PostgreSQL (match_players)
+    // Team A players
+    for (const player of teamAPlayers) {
+      await pool.query(
+        "INSERT INTO public.match_players (match_id, team_name, player_name) VALUES ($1, $2, $3)",
+        [match.id, match.team_a_name, player]
+      );
+    }
+
+    // Team B players
+    for (const player of teamBPlayers) {
+      await pool.query(
+        "INSERT INTO public.match_players (match_id, team_name, player_name) VALUES ($1, $2, $3)",
+        [match.id, match.team_b_name, player]
+      );
+    }
+
     return res.status(201).json({
       ok: true,
       message: "Match created successfully",
-      match: result.rows[0],
+      match,
     });
   } catch (error) {
     console.error("CREATE MATCH ERROR:", error);
@@ -43,6 +77,7 @@ const createMatch = async (req, res) => {
     });
   }
 };
+
 
 const startMatch = async (req, res) => {
   try {
@@ -55,8 +90,6 @@ const startMatch = async (req, res) => {
       openingBatsman1,
       openingBatsman2,
       openingBowler,
-      teamAPlayers,
-      teamBPlayers,
     } = req.body;
 
     // ✅ Basic validation
@@ -71,21 +104,6 @@ const startMatch = async (req, res) => {
         ok: false,
         message:
           "tossWinner, tossDecision, openingBatsman1, openingBatsman2, openingBowler are required",
-      });
-    }
-
-    // ✅ Players list validation
-    if (!Array.isArray(teamAPlayers) || !Array.isArray(teamBPlayers)) {
-      return res.status(400).json({
-        ok: false,
-        message: "teamAPlayers and teamBPlayers must be arrays",
-      });
-    }
-
-    if (teamAPlayers.length < 2 || teamBPlayers.length < 2) {
-      return res.status(400).json({
-        ok: false,
-        message: "Each team must have at least 2 players",
       });
     }
 
@@ -118,48 +136,56 @@ const startMatch = async (req, res) => {
       });
     }
 
-    // ✅ Validate opening players are in squads
-    if (!teamAPlayers.includes(openingBatsman1) && !teamBPlayers.includes(openingBatsman1)) {
+    // ✅ Fetch squads from PostgreSQL
+    const squadRes = await pool.query(
+      "SELECT team_name, player_name FROM public.match_players WHERE match_id = $1",
+      [matchId]
+    );
+
+    if (squadRes.rows.length === 0) {
       return res.status(400).json({
         ok: false,
-        message: "openingBatsman1 must be present in teamAPlayers or teamBPlayers",
+        message: "No players found for this match. Add players while creating match.",
       });
     }
 
-    if (!teamAPlayers.includes(openingBatsman2) && !teamBPlayers.includes(openingBatsman2)) {
+    const teamAPlayers = squadRes.rows
+      .filter((p) => p.team_name === match.team_a_name)
+      .map((p) => p.player_name);
+
+    const teamBPlayers = squadRes.rows
+      .filter((p) => p.team_name === match.team_b_name)
+      .map((p) => p.player_name);
+
+    if (teamAPlayers.length < 2 || teamBPlayers.length < 2) {
       return res.status(400).json({
         ok: false,
-        message: "openingBatsman2 must be present in teamAPlayers or teamBPlayers",
+        message: "Match squads are incomplete (need at least 2 players per team)",
       });
     }
 
-    if (!teamAPlayers.includes(openingBowler) && !teamBPlayers.includes(openingBowler)) {
+    // ✅ Validate opening players exist in squads
+    const allPlayers = [...teamAPlayers, ...teamBPlayers];
+
+    if (!allPlayers.includes(openingBatsman1)) {
       return res.status(400).json({
         ok: false,
-        message: "openingBowler must be present in teamAPlayers or teamBPlayers",
+        message: "openingBatsman1 must be present in match squad",
       });
     }
 
-    // 2) Store squads in PostgreSQL (match_players)
-    // ✅ remove old players if match restarted (safety)
-    await pool.query("DELETE FROM public.match_players WHERE match_id = $1", [
-      matchId,
-    ]);
-
-    // ✅ insert team A players
-    for (const player of teamAPlayers) {
-      await pool.query(
-        "INSERT INTO public.match_players (match_id, team_name, player_name) VALUES ($1, $2, $3)",
-        [matchId, match.team_a_name, player]
-      );
+    if (!allPlayers.includes(openingBatsman2)) {
+      return res.status(400).json({
+        ok: false,
+        message: "openingBatsman2 must be present in match squad",
+      });
     }
 
-    // ✅ insert team B players
-    for (const player of teamBPlayers) {
-      await pool.query(
-        "INSERT INTO public.match_players (match_id, team_name, player_name) VALUES ($1, $2, $3)",
-        [matchId, match.team_b_name, player]
-      );
+    if (!allPlayers.includes(openingBowler)) {
+      return res.status(400).json({
+        ok: false,
+        message: "openingBowler must be present in match squad",
+      });
     }
 
     // 3) Update match status to LIVE
@@ -182,13 +208,12 @@ const startMatch = async (req, res) => {
       tossWinner,
       tossDecision,
 
-      // ✅ squads
+      // ✅ squads from DB
       players: {
         [match.team_a_name]: teamAPlayers,
         [match.team_b_name]: teamBPlayers,
       },
 
-      // ✅ innings score
       score: {
         runs: 0,
         wickets: 0,
@@ -197,7 +222,6 @@ const startMatch = async (req, res) => {
 
       currentOver: [],
 
-      // ✅ current players
       striker: {
         name: openingBatsman1,
         runs: 0,
@@ -221,15 +245,12 @@ const startMatch = async (req, res) => {
         wickets: 0,
       },
 
-      // ✅ full stats maps (important)
       battingStats: {},
       bowlingStats: {},
       fallOfWickets: [],
     };
 
     // ✅ init stats for all players
-    const allPlayers = [...teamAPlayers, ...teamBPlayers];
-
     for (const p of allPlayers) {
       matchState.battingStats[p] = {
         runs: 0,
@@ -261,6 +282,7 @@ const startMatch = async (req, res) => {
     });
   }
 };
+
 
 const deleteMatch = async (req, res) => {
   try {
@@ -308,6 +330,9 @@ const deleteMatch = async (req, res) => {
   }
 };
 
+const calculateOversPlayed = (balls) => {
+  return `${Math.floor(balls / 6)}.${balls % 6}`;
+};
 
 const addBall = async (req, res) => {
   try {
@@ -335,7 +360,9 @@ const addBall = async (req, res) => {
     const match = matchResult.rows[0];
 
     if (match.created_by !== userId) {
-      return res.status(403).json({ ok: false, message: "Not allowed to score this match" });
+      return res
+        .status(403)
+        .json({ ok: false, message: "Not allowed to score this match" });
     }
 
     if (match.status !== "LIVE") {
@@ -350,6 +377,15 @@ const addBall = async (req, res) => {
       return res.status(404).json({
         ok: false,
         message: "Live match state not found in Redis. Start match first.",
+      });
+    }
+
+    // ✅ Safety check for innings 2 (must have striker/bowler set)
+    if (!state.striker || !state.nonStriker || !state.bowler) {
+      return res.status(400).json({
+        ok: false,
+        message:
+          "Striker/NonStriker/Bowler not set. Start innings properly before scoring.",
       });
     }
 
@@ -412,7 +448,7 @@ const addBall = async (req, res) => {
       else state.currentOver.push(String(runs));
     }
 
-    // 7) Handle wicket logic (NEW ✅)
+    // 7) Handle wicket logic ✅
     if (isWicket) {
       state.score.wickets += 1;
 
@@ -432,13 +468,26 @@ const addBall = async (req, res) => {
         bowler: bowlerName,
       });
 
-      // ✅ new batsman required (only if innings not ended)
-      if (!newBatsman) {
-        return res.status(400).json({
-          ok: false,
-          message: "newBatsman is required when wicket falls",
+      // ✅ new batsman required
+      // ✅ if all out (10 wickets) -> innings finished, no new batsman needed
+      if (state.score.wickets >= 10) {
+        await redis.set(matchStateKey, state);
+
+        return res.status(200).json({
+          ok: true,
+          message: "All out! Innings completed ✅",
+          inningsCompleted: true,
+          matchState: state,
         });
       }
+// ✅ new batsman required only if innings continues
+if (!newBatsman) {
+  return res.status(400).json({
+    ok: false,
+    message: "newBatsman is required when wicket falls",
+  });
+}
+
 
       // ✅ Validate new batsman exists in squad
       const allPlayers = [
@@ -461,7 +510,7 @@ const addBall = async (req, res) => {
         });
       }
 
-      // ✅ Replace striker with new batsman (fresh object)
+      // ✅ Replace striker with new batsman
       state.striker = {
         name: newBatsman,
         runs: state.battingStats[newBatsman]?.runs || 0,
@@ -491,9 +540,134 @@ const addBall = async (req, res) => {
       state.currentOver = [];
     }
 
-    // 10) Save updated state back to Redis
+    // ✅ Save updated state back to Redis (temporary)
     await redis.set(matchStateKey, state);
 
+    // ======================================================
+    // ✅ AUTO MATCH COMPLETION LOGIC (INNINGS 2)
+    // ======================================================
+
+    const maxBalls = Number(state.oversLimit) * 6;
+
+    // ✅ Helper: innings 1 batting team using toss logic
+    let innings1BattingTeam = "";
+    if (state.tossDecision === "BAT") innings1BattingTeam = state.tossWinner;
+    else innings1BattingTeam = state.tossWinner === state.teamA ? state.teamB : state.teamA;
+
+    const innings2BattingTeam =
+      innings1BattingTeam === state.teamA ? state.teamB : state.teamA;
+
+    // ✅ Case 1: Target chased -> innings 2 winner
+    if (state.innings === 2 && state.target && state.score.runs >= state.target) {
+      const oversPlayed = calculateOversPlayed(state.score.balls);
+
+      const innings2Summary = {
+        striker: state.striker,
+        nonStriker: state.nonStriker,
+        bowler: state.bowler,
+        battingStats: state.battingStats,
+        bowlingStats: state.bowlingStats,
+        fallOfWickets: state.fallOfWickets,
+        target: state.target,
+      };
+
+      // ✅ Save innings 2
+      await pool.query(
+        `INSERT INTO public.innings
+         (match_id, innings_no, batting_team, total_runs, wickets, balls, overs_played, summary)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [
+          matchId,
+          2,
+          innings2BattingTeam,
+          state.score.runs,
+          state.score.wickets,
+          state.score.balls,
+          oversPlayed,
+          innings2Summary,
+        ]
+      );
+
+      const winner = innings2BattingTeam;
+      const wicketsRemaining = 10 - state.score.wickets;
+      const resultText = `${winner} won by ${wicketsRemaining} wickets`;
+
+      // ✅ Complete match
+      await pool.query(
+        `UPDATE public.matches
+         SET status = 'COMPLETED', winner = $1, result_text = $2
+         WHERE id = $3`,
+        [winner, resultText, matchId]
+      );
+
+      // ✅ Cleanup redis
+      await redis.del(matchStateKey);
+
+      return res.status(200).json({
+        ok: true,
+        message: "Target chased! Match completed ✅",
+        winner,
+        resultText,
+      });
+    }
+
+    // ✅ Case 2: Innings 2 ends (overs done / all out) and target not achieved -> innings1 team wins
+    const innings2Ended =
+      state.innings === 2 &&
+      (state.score.wickets >= 10 || state.score.balls >= maxBalls);
+
+    if (innings2Ended && state.target && state.score.runs < state.target) {
+      const oversPlayed = calculateOversPlayed(state.score.balls);
+
+      const innings2Summary = {
+        striker: state.striker,
+        nonStriker: state.nonStriker,
+        bowler: state.bowler,
+        battingStats: state.battingStats,
+        bowlingStats: state.bowlingStats,
+        fallOfWickets: state.fallOfWickets,
+        target: state.target,
+      };
+
+      // ✅ Save innings 2
+      await pool.query(
+        `INSERT INTO public.innings
+         (match_id, innings_no, batting_team, total_runs, wickets, balls, overs_played, summary)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [
+          matchId,
+          2,
+          innings2BattingTeam,
+          state.score.runs,
+          state.score.wickets,
+          state.score.balls,
+          oversPlayed,
+          innings2Summary,
+        ]
+      );
+
+      const winner = innings1BattingTeam;
+      const runsMargin = state.target - state.score.runs - 1;
+      const resultText = `${winner} won by ${runsMargin} runs`;
+
+      await pool.query(
+        `UPDATE public.matches
+         SET status = 'COMPLETED', winner = $1, result_text = $2
+         WHERE id = $3`,
+        [winner, resultText, matchId]
+      );
+
+      await redis.del(matchStateKey);
+
+      return res.status(200).json({
+        ok: true,
+        message: "Match completed ✅",
+        winner,
+        resultText,
+      });
+    }
+
+    // ✅ Normal response (match continues)
     return res.status(200).json({
       ok: true,
       message: "Ball updated",
@@ -507,6 +681,7 @@ const addBall = async (req, res) => {
     });
   }
 };
+
 
 const changeBowler = async (req, res) => {
   try {
@@ -862,5 +1037,48 @@ const startInnings2 = async (req, res) => {
   }
 };
 
+const getScorecard = async (req, res) => {
+  try {
+    const { matchId } = req.params;
+    const userId = req.user.id;
 
-module.exports = { createMatch , startMatch , addBall , deleteMatch , changeBowler , endInnings , startInnings2 };
+    // ✅ match check + ownership
+    const matchResult = await pool.query(
+      "SELECT id, created_by, team_a_name, team_b_name, overs, status, winner, result_text, created_at FROM public.matches WHERE id = $1",
+      [matchId]
+    );
+
+    if (matchResult.rows.length === 0) {
+      return res.status(404).json({ ok: false, message: "Match not found" });
+    }
+
+    const match = matchResult.rows[0];
+
+    if (match.created_by !== userId) {
+      return res.status(403).json({ ok: false, message: "Not allowed" });
+    }
+
+    // ✅ fetch innings data
+    const inningsResult = await pool.query(
+      `SELECT innings_no, batting_team, total_runs, wickets, balls, overs_played, summary, created_at
+       FROM public.innings
+       WHERE match_id = $1
+       ORDER BY innings_no ASC`,
+      [matchId]
+    );
+
+    return res.status(200).json({
+      ok: true,
+      match,
+      innings: inningsResult.rows,
+    });
+  } catch (error) {
+    console.error("GET SCORECARD ERROR:", error);
+    return res.status(500).json({
+      ok: false,
+      message: "Server error while fetching scorecard",
+    });
+  }
+};
+
+module.exports = { createMatch , startMatch , addBall , deleteMatch , changeBowler , endInnings , startInnings2 , getScorecard };
