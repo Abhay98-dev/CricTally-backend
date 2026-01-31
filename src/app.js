@@ -7,6 +7,14 @@ const matchRoutes = require('./routes/matchRoutes')
 const publicRoutes = require('./routes/publicRoutes')
 const playerRoutes = require('./routes/playerRoutes')
 
+app.use(cors({
+  origin: "*",
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+}));
+
+app.options("*", cors());
+
 const app = express()
 app.use(express.json())
 
