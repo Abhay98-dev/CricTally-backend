@@ -5,6 +5,7 @@ const authRoutes = require('./routes/authRoutes')
 const pool = require('./config/db')
 const matchRoutes = require('./routes/matchRoutes')
 const publicRoutes = require('./routes/publicRoutes')
+const playerRoutes = require('./routes/playerRoutes')
 
 const app = express()
 app.use(express.json())
@@ -26,5 +27,6 @@ app.get("/db-test", async (req, res) => {
 app.use('/api/auth', authRoutes)
 app.use('/api/matches', matchRoutes)
 app.use('/api/public', publicRoutes)
+app.use('/api/players', playerRoutes)
 
 module.exports = app
